@@ -1,0 +1,8 @@
+{:deps {com.monkeyprojects/oci-core {:mvn/version "0.1.0-SNAPSHOT"}
+        com.monkeyprojects/oci-container-instance {:mvn/version "0.1.0"}
+        com.monkeyprojects/oci-lb {:mvn/version "0.1.0-SNAPSHOT"}
+        com.taoensso/telemere {:mvn/version "1.0.0-beta14"}}
+
+ :aliases
+ {:dev
+  {:extra-paths ["env/dev" "dev-resources"]}}}
