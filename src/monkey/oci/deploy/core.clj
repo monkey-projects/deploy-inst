@@ -128,34 +128,39 @@
   [conf ip bs]
   (let [ctx (lbc/make-client conf)]
     (->> bs
-         (map #(lbc/create-backend ctx {:load-balancer-id (:load-balancer-id %)
-                                        :backend-set-name (:backend-set %)
-                                        :backend {:ip-address ip
-                                                  :port (:port %)}}))
+         (map #(lbc/create-backend ctx
+                                   {:load-balancer-id (:load-balancer-id %)
+                                    :backend-set-name (:backend-set %)
+                                    :backend {:ip-address ip
+                                              :port (:port %)}}))
          (apply md/zip))))
 
-(defn drain-backends [be]
-  (->> be
-       (map #(lbc/update-backend {:load-balancer-id (:load-balancer-id %)
-                                  :backend-set-name (:backend-set %)
-                                  :backend-name (:backend %)
-                                  :backend {:drain true}}))
-       (apply md/zip)))
+(defn drain-backends [conf be]
+  (let [ctx (lbc/make-client conf)]
+    (->> be
+         (map #(lbc/update-backend ctx
+                                   {:load-balancer-id (:load-balancer-id %)
+                                    :backend-set-name (:backend-set %)
+                                    :backend-name (:backend %)
+                                    :backend {:drain true}}))
+         (apply md/zip))))
 
-(defn delete-backends [be]
-  (->> be
-       (map #(lbc/delete-backend {:load-balancer-id (:load-balancer-id %)
-                                  :backend-set-name (:backend-set %)
-                                  :backend-name (:backend %)}))
-       (apply md/zip)))
+(defn delete-backends [conf be]
+  (let [ctx (lbc/make-client conf)]
+    (->> be
+         (map #(lbc/delete-backend ctx
+                                   {:load-balancer-id (:load-balancer-id %)
+                                    :backend-set-name (:backend-set %)
+                                    :backend-name (:backend %)}))
+         (apply md/zip))))
 
-(defn stop-backends [be]
+(defn stop-backends [conf be]
   ;; First drain, then wait a while and then delete the backends.
   (md/chain
    (drain-backends be)
    (fn [_]
      (t/log! {:data {:backends be}} "Waiting for 10 seconds to drain connections")
-     (mt/in (mt/seconds 10) #(delete-backends be)))))
+     (mt/in (mt/seconds 10) #(delete-backends conf be)))))
 
 (defn redeploy [ctx lb-id src-inst-f dest-conf]
   ;; 1. Create the new instance

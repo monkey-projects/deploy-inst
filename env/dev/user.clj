@@ -46,12 +46,18 @@
          (d/create-backends conf ip)
          (deref))))
 
+(defn make-new-backends [lb]
+  [{:port 80
+    :load-balancer-id (:id lb)
+    :backend-set "test-web"}])
+
 (defn redeploy []
   (t/log! {:instance-name (:display-name test-ci)} "Redeploying instance")
   (let [new (d/create-and-start-instance conf test-ci)
         lb (first (lbs))
         old (find-ci)
         bes (d/find-matching-backends lb (private-ips old))
+        new-bes (or bes (make-new-backends bes))
         new-ips (md/chain
                  new
                  :vnics
@@ -65,11 +71,11 @@
      new-ips
      first
      (fn [ip]
-       (t/log! {:data ip} "Creating backends for ip")
-       (d/create-backends conf ip bes))
+       (t/log! {:data ip :backends new-bes} "Creating backends for ip")
+       (d/create-backends conf ip new-bes))
      ;; TODO Wait for new backends to come online
      (fn [_]
        (t/log! {:data bes} "Stopping old backends and deleting old container instance")
        (md/zip
-        (d/stop-backends bes)
+        (d/stop-backends conf bes)
         (delete-ci (:id old)))))))
