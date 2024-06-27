@@ -1,10 +1,9 @@
 (ns user
-  (:require [manifold.deferred :as md]
-            [monkey.oci.deploy.core :as d]
-            [monkey.oci.container-instance.core :as cc]
-            [taoensso.telemere :as t]))
+  (:require [aero.core :as ac]
+            [clojure.java.io :as io]
+            [monkey.oci.deploy.core :as d]))
 
-(def conf (d/load-config))
+(def conf (ac/read-config (io/resource "config.edn")))
 
 (def test-ci
   {:display-name "test-webserver"
