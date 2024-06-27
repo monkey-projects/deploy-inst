@@ -188,8 +188,8 @@
 
 (defn wait-for-backends
   "Polls until all backends are online, or fails when on timeout"
-  [conf bes]
-  (let [interval (mt/seconds 5)
+  [conf bes & [interval]]
+  (let [interval (or interval (mt/seconds 5))
         ctx (lbc/make-client conf)]
     (letfn [(->health-args [{:keys [backend] :as be}]
               (-> be
@@ -220,7 +220,7 @@
           (fn [r]
             (if (all-ok? r)
               true
-              (md/recur (mt/in interval (check-all)))))))
+              (md/recur (mt/in interval check-all))))))
        (mt/seconds backend-timeout-s)))))
 
 (defn redeploy [conf lb-f src-inst-f dest-conf dest-backends]
