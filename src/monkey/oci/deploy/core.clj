@@ -17,20 +17,6 @@
     (-> (edn/read r)
         (update :private-key u/load-privkey))))
 
-(defn list-lbs
-  "Lists load balancers in the compartment specified by `conf`"
-  [conf]
-  (let [ctx (lbc/make-client conf)]
-    (md/chain
-     (lbc/list-load-balancers ctx (select-keys conf [:compartment-id]))
-     :body)))
-
-(defn list-cis
-  "List container instances in the conf compartment"
-  [conf]
-  (let [ctx (ci/make-context conf)]
-    (ci/list-container-instances ctx (select-keys conf [:compartment-id]))))
-
 (defn map->filter [m]
   (fn [ci]
     (= m (select-keys ci (keys m)))))
@@ -40,6 +26,28 @@
     (fn? x) x
     (map? x) (map->filter x)
     :else (throw (ex-info "Unable to convert to filter" x))))
+
+(defn list-lbs
+  "Lists load balancers in the compartment specified by `conf`"
+  [conf]
+  (let [ctx (lbc/make-client conf)]
+    (md/chain
+     (lbc/list-load-balancers ctx (select-keys conf [:compartment-id]))
+     :body)))
+
+(defn find-lb
+  "Retrieves load balancer by filter"
+  [conf lb-f]
+  (md/chain
+   (list-lbs conf)
+   (partial filter (->filter-fn lb-f))
+   first))
+
+(defn list-cis
+  "List container instances in the conf compartment"
+  [conf]
+  (let [ctx (ci/make-context conf)]
+    (ci/list-container-instances ctx (select-keys conf [:compartment-id]))))
 
 (defn find-ci
   "Find container instance by filter.  Filter can be a fn or a map, in which case
@@ -69,6 +77,11 @@
           (map (partial oc/list-private-ips ctx))
           (apply md/zip))
      (partial mapcat :body))))
+
+(defn private-ips [conf ci]
+  (md/chain
+   (list-vnic-ips conf (:vnics ci))
+   (partial map :ip-address)))
 
 (defn find-matching-backends
   "Finds all backends in the load balancer for the given ip address"
@@ -123,17 +136,25 @@
      :id
      (partial wait-until-started ctx))))
 
+(defn delete-ci [conf id]
+  (t/log! {:data {:instance-id id}} "Deleting old instance")
+  (ci/delete-container-instance (ci/make-context conf) {:instance-id id}))
+
 (defn create-backends
   "Creates backends for the given ip in the load balancer backends."
   [conf ip bs]
-  (let [ctx (lbc/make-client conf)]
-    (->> bs
-         (map #(lbc/create-backend ctx
-                                   {:load-balancer-id (:load-balancer-id %)
-                                    :backend-set-name (:backend-set %)
-                                    :backend {:ip-address ip
-                                              :port (:port %)}}))
-         (apply md/zip))))
+  (let [ctx (lbc/make-client conf)
+        configs (map (fn [be]
+                       {:load-balancer-id (:load-balancer-id be)
+                        :backend-set-name (:backend-set be)
+                        :backend {:ip-address ip
+                                  :port (:port be)}})
+                     bs)]
+    (md/chain
+     (->> configs
+          (map (partial lbc/create-backend ctx))
+          (apply md/zip))
+     (constantly configs))))
 
 (defn drain-backends [conf be]
   (let [ctx (lbc/make-client conf)]
@@ -147,6 +168,7 @@
 
 (defn delete-backends [conf be]
   (let [ctx (lbc/make-client conf)]
+    (t/log! {:data {:backends be}} "Deleting backends")
     (->> be
          (map #(lbc/delete-backend ctx
                                    {:load-balancer-id (:load-balancer-id %)
@@ -154,21 +176,100 @@
                                     :backend-name (:backend %)}))
          (apply md/zip))))
 
-(defn stop-backends [conf be]
-  ;; First drain, then wait a while and then delete the backends.
-  (md/chain
-   (drain-backends be)
-   (fn [_]
-     (t/log! {:data {:backends be}} "Waiting for 10 seconds to drain connections")
-     (mt/in (mt/seconds 10) #(delete-backends conf be)))))
+(defn- make-new-backends [lb dest-backends]
+  (map (fn [be]
+         (-> be
+             (select-keys [:port :backend-set])
+             (assoc :load-balancer-id (:id lb))))
+       dest-backends))
 
-(defn redeploy [ctx lb-id src-inst-f dest-conf]
+(def drain-delay-s 10)
+(def backend-timeout-s 120)
+
+(defn wait-for-backends
+  "Polls until all backends are online, or fails when on timeout"
+  [conf bes]
+  (let [interval (mt/seconds 5)
+        ctx (lbc/make-client conf)]
+    (letfn [(->health-args [{:keys [backend] :as be}]
+              (-> be
+                  (dissoc :backend)
+                  (assoc :backend-name (str (:ip-address backend) ":" (:port backend)))))
+            (get-health [be]
+              (t/log! {:level :debug :backend be} "Checking backend health")
+              (md/chain
+               (lbc/get-backend-health ctx be)
+               :body
+               :status
+               (fn [s]
+                 (t/log! {:data {:status s
+                                 :backend be}}
+                         "Backend health status")
+                 s)))
+            (check-all []
+              (->> bes
+                   (map ->health-args)
+                   (map get-health)
+                   (apply md/zip)))
+            (all-ok? [r]
+              (every? (partial = "OK") r))]
+      (md/timeout!
+       (md/loop [r (check-all)]
+         (md/chain
+          r
+          (fn [r]
+            (if (all-ok? r)
+              true
+              (md/recur (mt/in interval (check-all)))))))
+       (mt/seconds backend-timeout-s)))))
+
+(defn redeploy [conf lb-f src-inst-f dest-conf dest-backends]
   ;; 1. Create the new instance
   ;; 2. Look up ip address of the instance to replace
   ;; 3. Find backends pointing to the ip address of the old instance
-  ;; 4. Create new backends for each container in the new instace for the backends
-  ;; 5. Wait until all backends are online
-  ;; 6. Drain old backends
-  ;; 7. Wait and delete old backends
-  ;; 8. Delete the old instance
-  )
+  (t/log! {:instance-name (:display-name dest-conf)} "Redeploying instance")
+  (md/let-flow [new (create-and-start-instance conf dest-conf)
+                lb (find-lb conf lb-f)
+                old (find-ci conf src-inst-f)
+                bes (md/chain
+                     lb
+                     (partial private-ips conf)
+                     (fn [ips]
+                       (find-matching-backends lb ips)))
+                new-bes (if (empty? bes)
+                          (make-new-backends lb dest-backends)
+                          bes)
+                new-ips (md/chain
+                         new
+                         :vnics
+                         (partial list-vnic-ips conf)
+                         (partial map :ip-address)
+                         (fn [ips]
+                           (t/log! {:data ips} "Ip addresses assigned to new instance")
+                           ips))]
+    ;; 4. Create new backends for each container in the new instace for the backends
+    ;; 5. Wait until all backends are online
+    ;; 6. Drain old backends
+    ;; 7. Wait and delete old backends
+    ;; 8. Delete the old instance
+    (md/chain
+     new-ips
+     first
+     (fn [ip]
+       (t/log! {:data ip :backends new-bes} "Creating backends for ip")
+       (create-backends conf ip new-bes))
+     (partial wait-for-backends conf)
+     (fn [_]
+       (drain-backends conf bes))
+     (fn [_]
+       (t/log! {:data {:backends bes
+                       :seconds drain-delay-s}}
+               "Waiting for connections to be drained")
+       (mt/in (mt/seconds drain-delay-s)
+              (fn []
+                (t/log! {:data bes} "Stopping old backends and deleting old container instance")
+                (md/zip
+                 (delete-backends conf bes)
+                 (delete-ci conf (:id old)))))))
+    ;; TODO Return collected info
+    ))

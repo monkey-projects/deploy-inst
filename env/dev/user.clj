@@ -19,63 +19,11 @@
    [{:display-name "webserver"
      :image-url "docker.io/httpd:2.4"}]})
 
-(defn find-ci []
-  @(d/find-ci conf {:display-name (:display-name test-ci)
-                    :lifecycle-state "ACTIVE"}))
-
-(defn private-ips [ci]
-  (->> ci
-       :vnics
-       (d/list-vnic-ips conf)
-       deref
-       (map :ip-address)))
-
-(defn lbs []
-  @(d/list-lbs conf))
-
-(defn delete-ci [id]
-  (cc/delete-container-instance (cc/make-context conf) {:instance-id id}))
-
-#_(defn create-backends [lb ci ports]
-  (when-let [ip (first (private-ips ci))]
-    (->> ports
-         (map (fn [p]
-                {:port p
-                 :load-balancer-id (:id lb)
-                 :backend-set nil}))
-         (d/create-backends conf ip)
-         (deref))))
-
-(defn make-new-backends [lb]
-  [{:port 80
-    :load-balancer-id (:id lb)
-    :backend-set "test-web"}])
-
 (defn redeploy []
-  (t/log! {:instance-name (:display-name test-ci)} "Redeploying instance")
-  (let [new (d/create-and-start-instance conf test-ci)
-        lb (first (lbs))
-        old (find-ci)
-        bes (d/find-matching-backends lb (private-ips old))
-        new-bes (or bes (make-new-backends bes))
-        new-ips (md/chain
-                 new
-                 :vnics
-                 (partial d/list-vnic-ips conf)
-                 (partial map :ip-address)
-                 (fn [ips]
-                   (t/log! {:data ips} "Ip addresses assigned to new instance")
-                   ips))]
-    (t/log! {:data bes} "Found matching backends using existing instance")
-    (md/chain
-     new-ips
-     first
-     (fn [ip]
-       (t/log! {:data ip :backends new-bes} "Creating backends for ip")
-       (d/create-backends conf ip new-bes))
-     ;; TODO Wait for new backends to come online
-     (fn [_]
-       (t/log! {:data bes} "Stopping old backends and deleting old container instance")
-       (md/zip
-        (d/stop-backends conf bes)
-        (delete-ci (:id old)))))))
+  (d/redeploy conf
+              {:freeform-tags {:env "test"}}
+              {:display-name "test-webserver"
+               :lifecycle-state "ACTIVE"}
+              test-ci
+              [{:port 80
+                :backend-set "test-web"}]))
