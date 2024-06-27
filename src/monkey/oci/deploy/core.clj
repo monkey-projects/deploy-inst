@@ -10,12 +10,8 @@
             [monkey.oci.common.utils :as u]
             [monkey.oci.lb.core :as lbc]))
 
-(defn load-config []
-  (with-open [r (-> (io/resource "config.edn")
-                    (io/reader)
-                    (java.io.PushbackReader.))]
-    (-> (edn/read r)
-        (update :private-key u/load-privkey))))
+(defn- convert-config [conf]
+  (update conf :private-key u/load-privkey))
 
 (defn map->filter [m]
   (fn [ci]
@@ -38,6 +34,7 @@
 (defn find-lb
   "Retrieves load balancer by filter"
   [conf lb-f]
+  (t/log! {:data {:filter lb-f}} "Looking up load balancer")
   (md/chain
    (list-lbs conf)
    (partial filter (->filter-fn lb-f))
@@ -53,6 +50,7 @@
   "Find container instance by filter.  Filter can be a fn or a map, in which case
    all keyvals of that maps must match."
   [conf f]
+  (t/log! {:data {:filter f}} "Looking up container instance")
   (let [ctx (ci/make-context conf)]
     (md/chain
      (ci/list-container-instances ctx (select-keys conf [:compartment-id]))
@@ -158,13 +156,17 @@
 
 (defn drain-backends [conf be]
   (let [ctx (lbc/make-client conf)]
-    (->> be
-         (map #(lbc/update-backend ctx
-                                   {:load-balancer-id (:load-balancer-id %)
-                                    :backend-set-name (:backend-set %)
-                                    :backend-name (:backend %)
-                                    :backend {:drain true}}))
-         (apply md/zip))))
+    (md/chain
+     (->> be
+          (map #(lbc/update-backend ctx
+                                    {:load-balancer-id (:load-balancer-id %)
+                                     :backend-set-name (:backend-set %)
+                                     :backend-name (:backend %)
+                                     :backend {:drain true}}))
+          (apply md/zip)))
+    (fn [res]
+      {:backends be
+       :results res})))
 
 (defn delete-backends [conf be]
   (let [ctx (lbc/make-client conf)]
@@ -214,13 +216,15 @@
             (all-ok? [r]
               (every? (partial = "OK") r))]
       (md/timeout!
-       (md/loop [r (check-all)]
-         (md/chain
-          r
-          (fn [r]
-            (if (all-ok? r)
-              true
-              (md/recur (mt/in interval check-all))))))
+       (md/chain
+        (md/loop [r (check-all)]
+          (md/chain
+           r
+           (fn [r]
+             (if (all-ok? r)
+               true
+               (md/recur (mt/in interval check-all))))))
+        (constantly bes))
        (mt/seconds backend-timeout-s)))))
 
 (defn redeploy [conf lb-f src-inst-f dest-conf dest-backends]
@@ -228,17 +232,18 @@
   ;; 2. Look up ip address of the instance to replace
   ;; 3. Find backends pointing to the ip address of the old instance
   (t/log! {:instance-name (:display-name dest-conf)} "Redeploying instance")
-  (md/let-flow [new (create-and-start-instance conf dest-conf)
+  (md/let-flow [conf (convert-config conf)
+                new (create-and-start-instance conf dest-conf)
                 lb (find-lb conf lb-f)
                 old (find-ci conf src-inst-f)
                 bes (md/chain
-                     lb
+                     old
                      (partial private-ips conf)
                      (fn [ips]
                        (find-matching-backends lb ips)))
-                new-bes (if (empty? bes)
-                          (make-new-backends lb dest-backends)
-                          bes)
+                new-bes (if (empty? dest-backends)
+                          bes
+                          (make-new-backends lb dest-backends))
                 new-ips (md/chain
                          new
                          :vnics
@@ -259,17 +264,23 @@
        (t/log! {:data ip :backends new-bes} "Creating backends for ip")
        (create-backends conf ip new-bes))
      (partial wait-for-backends conf)
-     (fn [_]
-       (drain-backends conf bes))
-     (fn [_]
+     (fn [created-bes]
+       (md/chain
+        (drain-backends conf bes)
+        (constantly created-bes)))
+     (fn [created-bes]
        (t/log! {:data {:backends bes
                        :seconds drain-delay-s}}
                "Waiting for connections to be drained")
-       (mt/in (mt/seconds drain-delay-s)
-              (fn []
-                (t/log! {:data bes} "Stopping old backends and deleting old container instance")
-                (md/zip
-                 (delete-backends conf bes)
-                 (delete-ci conf (:id old)))))))
-    ;; TODO Return collected info
-    ))
+       (md/chain
+        (mt/in (mt/seconds drain-delay-s)
+               (fn []
+                 (t/log! {:data bes} "Stopping old backends and deleting old container instance")
+                 (md/zip
+                  (delete-backends conf bes)
+                  (delete-ci conf (:id old)))))
+        (constantly created-bes)))
+     (fn [created-bes]
+       (md/chain
+        (md/zip old new lb created-bes bes new-ips)
+        (partial zipmap [:old-ci :new-ci :lb :new-bes :old-bes :new-ips]))))))

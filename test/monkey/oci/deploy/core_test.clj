@@ -52,5 +52,5 @@
                                                  (swap! states rest)
                                                  (md/success-deferred {:body {:status s}}))
                                                (md/error-deferred (ex-info "Unexpected invocation" {:args args}))))]
-        (is (true? @(sut/wait-for-backends {} backends 100)))
+        (is (= backends @(sut/wait-for-backends {} backends 100)))
         (is (empty? @states))))))

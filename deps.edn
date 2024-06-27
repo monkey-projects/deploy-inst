@@ -1,4 +1,5 @@
-{:deps {com.monkeyprojects/oci-core {:mvn/version "0.1.0-SNAPSHOT"}
+{:deps {aero/aero {:mvn/version "1.1.6"}
+        com.monkeyprojects/oci-core {:mvn/version "0.1.0-SNAPSHOT"}
         com.monkeyprojects/oci-container-instance {:mvn/version "0.1.0"}
         com.monkeyprojects/oci-lb {:mvn/version "0.1.0-SNAPSHOT"}
         com.taoensso/telemere {:mvn/version "1.0.0-beta14"}}
@@ -34,4 +35,23 @@
   {:exec-fn monkey.build/jar+install}
 
   :publish
-  {:exec-fn monkey.build/jar+deploy}}}
+  {:exec-fn monkey.build/jar+deploy}
+
+  :run
+  {:exec-fn monkey.oci.deploy.cli/redeploy
+   :exec-args {:config-file "dev-resources/config.edn"
+               :lb-filter {:freeform-tags {:env "test"}}
+               :ci-filter {:lifecycle-state "ACTIVE"
+                           :freeform-tags {:env "test"}}
+               :backends [{:port 80
+                           :backend-set "test-web"}]}}
+
+  :show
+  {:exec-fn monkey.oci.deploy.cli/show}
+
+  :staging
+  {:exec-args {:ci-config-file "dev-resources/staging.edn"
+               :backends [{:port 8080
+                           :backend-set "staging-website"}
+                          {:port 8081
+                           :backend-set "staging-gui"}]}}}}
