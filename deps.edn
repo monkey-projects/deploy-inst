@@ -51,7 +51,12 @@
 
   :staging
   {:exec-args {:ci-config-file "dev-resources/staging.edn"
+               :ci-filter {:display-name "monkeyci-staging"
+                           :lifecycle-state "ACTIVE"
+                           :freeform-tags {:env "test"}}
                :backends [{:port 8080
                            :backend-set "staging-website"}
                           {:port 8081
-                           :backend-set "staging-gui"}]}}}}
+                           :backend-set "staging-gui"}
+                          {:port 3000
+                           :backend-set "staging-api"}]}}}}

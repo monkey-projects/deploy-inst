@@ -10,6 +10,22 @@
             [monkey.oci.common.utils :as u]
             [monkey.oci.lb.core :as lbc]))
 
+(defn- error? [{:keys [status]}]
+  (and (number? status) (>= status 400)))
+
+(defn- throw-on-error [r]
+  (if (error? r)
+    (throw (ex-info "Got error response" r))
+    r))
+
+(defn- throw-on-any-error
+  "Throws when any of the responses contains an error"
+  [responses]
+  (let [failed (filter error? responses)]
+    (if (not-empty failed)
+      (throw (ex-info "One or more requests failed" {:failing failed}))
+      responses)))
+
 (defn- convert-config [conf]
   (update conf :private-key u/load-privkey))
 
@@ -29,6 +45,7 @@
   (let [ctx (lbc/make-client conf)]
     (md/chain
      (lbc/list-load-balancers ctx (select-keys conf [:compartment-id]))
+     throw-on-error
      :body)))
 
 (defn find-lb
@@ -54,6 +71,7 @@
   (let [ctx (ci/make-context conf)]
     (md/chain
      (ci/list-container-instances ctx (select-keys conf [:compartment-id]))
+     throw-on-error
      :body
      :items
      (partial filter (->filter-fn f))
@@ -74,7 +92,7 @@
           (map #(select-keys % [:vnic-id]))
           (map (partial oc/list-private-ips ctx))
           (apply md/zip))
-     (partial mapcat :body))))
+     (partial mapcat (comp :body throw-on-error)))))
 
 (defn private-ips [conf ci]
   (md/chain
@@ -110,6 +128,7 @@
                         (t/log! "Checking if instance has started...")
                         @(md/chain
                           (ci/get-container-instance ctx {:instance-id cid})
+                          throw-on-error
                           :body
                           (fn [{:keys [lifecycle-state] :as ci}]
                             (t/log! {:data {:lifecycle-state lifecycle-state}} "Lifecycle state")
@@ -130,13 +149,16 @@
     (t/log! {:level :info :data {:instance (:display-name ci)}} "Creating container instance")
     (md/chain
      (ci/create-container-instance ctx {:container-instance ci})
+     throw-on-error
      :body
      :id
      (partial wait-until-started ctx))))
 
 (defn delete-ci [conf id]
   (t/log! {:data {:instance-id id}} "Deleting old instance")
-  (ci/delete-container-instance (ci/make-context conf) {:instance-id id}))
+  (md/chain
+   (ci/delete-container-instance (ci/make-context conf) {:instance-id id})
+   throw-on-error))
 
 (defn create-backends
   "Creates backends for the given ip in the load balancer backends."
@@ -163,20 +185,23 @@
                                      :backend-set-name (:backend-set %)
                                      :backend-name (:backend %)
                                      :backend {:drain true}}))
-          (apply md/zip)))
-    (fn [res]
-      {:backends be
-       :results res})))
+          (apply md/zip))
+     throw-on-any-error
+     (fn [res]
+       {:backends be
+        :results res}))))
 
 (defn delete-backends [conf be]
   (let [ctx (lbc/make-client conf)]
     (t/log! {:data {:backends be}} "Deleting backends")
-    (->> be
-         (map #(lbc/delete-backend ctx
-                                   {:load-balancer-id (:load-balancer-id %)
-                                    :backend-set-name (:backend-set %)
-                                    :backend-name (:backend %)}))
-         (apply md/zip))))
+    (md/chain
+     (->> be
+          (map #(lbc/delete-backend ctx
+                                    {:load-balancer-id (:load-balancer-id %)
+                                     :backend-set-name (:backend-set %)
+                                     :backend-name (:backend %)}))
+          (apply md/zip))
+     throw-on-any-error)))
 
 (defn- make-new-backends [lb dest-backends]
   (map (fn [be]
@@ -201,6 +226,7 @@
               (t/log! {:level :debug :backend be} "Checking backend health")
               (md/chain
                (lbc/get-backend-health ctx be)
+               throw-on-error
                :body
                :status
                (fn [s]
@@ -260,6 +286,7 @@
     (md/chain
      new-ips
      first
+     ;; TODO Add error checking
      (fn [ip]
        (t/log! {:data ip :backends new-bes} "Creating backends for ip")
        (create-backends conf ip new-bes))
