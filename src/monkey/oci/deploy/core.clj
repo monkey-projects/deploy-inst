@@ -226,7 +226,8 @@
               (t/log! {:level :debug :backend be} "Checking backend health")
               (md/chain
                (lbc/get-backend-health ctx be)
-               throw-on-error
+               ;; Note that health checks can return 404 if the backend is still
+               ;; being created.
                :body
                :status
                (fn [s]

@@ -1,6 +1,7 @@
 (ns monkey.oci.deploy.cli
   "Functions to invoke from the cli"
   (:require [aero.core :as ac]
+            [monkey.aero] ; For multimethods
             [monkey.oci.deploy.core :as c]
             [taoensso.telemere :as t])
   (:import java.util.Base64))
@@ -8,11 +9,6 @@
 (defn- load-config [p]
   (t/log! {:data {:path p}} "Loading configuration")
   (ac/read-config p))
-
-;; Aero reader that reads the given file and encodes to base64
-(defmethod ac/reader 'base64
-  [_ _ value]
-  (.encodeToString (Base64/getEncoder) (.getBytes (slurp value))))
 
 (defn show [{:keys [ci-config-file]}]
   (t/log! {:data {:path ci-config-file
