@@ -1,6 +1,7 @@
 (ns user
   (:require [aero.core :as ac]
             [clojure.java.io :as io]
+            [monkey.aero]
             [monkey.oci.deploy.core :as d]))
 
 (def conf (ac/read-config (io/resource "config.edn")))

@@ -80,6 +80,15 @@
              (as-> x (ci/get-container-instance ctx {:instance-id x}))
              (md/chain :body)))))))
 
+(defn get-ci
+  "Fetches details for container instance by id"
+  [conf id]
+  (let [ctx (ci/make-context conf)]
+    (md/chain
+     (ci/get-container-instance ctx {:instance-id id})
+     throw-on-error
+     :body)))
+
 (defn list-vnic-ips
   "Lists all private ip's that are linked to the list of vnics (as found in results from `find-ci`)"
   [conf vnics]
@@ -312,7 +321,25 @@
         (partial zipmap [:old-ci :new-ci :lb :new-bes :old-bes :new-ips]))))))
 
 (defn destroy
-  "Destroys a container instance and its associated backends."
-  [conf id]
+  "Destroys a container instance and its associated backends.  Useful for cleaning up
+   failed deployments."
+  [conf lb-f id]
   (t/log! {:data {:instance-id id}} "Destroying instance")
-  )
+  (md/let-flow [lb (find-lb conf lb-f)
+                ci (get-ci conf id)
+                bes (md/chain
+                     ci
+                     (partial private-ips conf)
+                     (fn [ips]
+                       (find-matching-backends lb ips)))]
+    (md/chain
+     (drain-backends conf bes)
+     (fn [_]
+       (md/zip
+        (delete-ci conf id)
+        (delete-backends conf bes)))
+     (fn [_]
+       (md/zip ci bes))
+     (fn [[ci bes]]
+       {:ci ci
+        :backends bes}))))
