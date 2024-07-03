@@ -26,9 +26,6 @@
       (throw (ex-info "One or more requests failed" {:failing failed}))
       responses)))
 
-(defn- convert-config [conf]
-  (update conf :private-key u/load-privkey))
-
 (defn map->filter [m]
   (fn [ci]
     (= m (select-keys ci (keys m)))))
@@ -259,8 +256,7 @@
   ;; 2. Look up ip address of the instance to replace
   ;; 3. Find backends pointing to the ip address of the old instance
   (t/log! {:instance-name (:display-name dest-conf)} "Redeploying instance")
-  (md/let-flow [conf (convert-config conf)
-                new (create-and-start-instance conf dest-conf)
+  (md/let-flow [new (create-and-start-instance conf dest-conf)
                 lb (find-lb conf lb-f)
                 old (find-ci conf src-inst-f)
                 bes (md/chain
