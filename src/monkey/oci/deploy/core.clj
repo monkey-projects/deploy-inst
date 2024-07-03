@@ -286,7 +286,6 @@
     (md/chain
      new-ips
      first
-     ;; TODO Add error checking
      (fn [ip]
        (t/log! {:data ip :backends new-bes} "Creating backends for ip")
        (create-backends conf ip new-bes))
@@ -311,3 +310,9 @@
        (md/chain
         (md/zip old new lb created-bes bes new-ips)
         (partial zipmap [:old-ci :new-ci :lb :new-bes :old-bes :new-ips]))))))
+
+(defn destroy
+  "Destroys a container instance and its associated backends."
+  [conf id]
+  (t/log! {:data {:instance-id id}} "Destroying instance")
+  )

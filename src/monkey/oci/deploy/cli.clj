@@ -29,4 +29,5 @@
                         (zipmap [:old-ci :new-di]))}
             "Instances redeployed")
     (t/log! {:data (select-keys res [:old-bes :new-bes])}
-            "Backends redirected")))
+            "Backends redirected")
+    res))
