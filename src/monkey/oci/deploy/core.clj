@@ -181,7 +181,10 @@
                                     {:load-balancer-id (:load-balancer-id %)
                                      :backend-set-name (:backend-set %)
                                      :backend-name (:backend %)
-                                     :backend {:drain true}}))
+                                     :backend {:drain true
+                                               :backup false
+                                               :offline false
+                                               :weight 1}}))
           (apply md/zip))
      throw-on-any-error
      (fn [res]
