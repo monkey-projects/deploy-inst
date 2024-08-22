@@ -31,3 +31,13 @@
     (t/log! {:data (select-keys res [:old-bes :new-bes])}
             "Backends redirected")
     res))
+
+(defn destroy
+  "CLI function to destroy a container instance and associated loadbalancer backends"
+  [{:keys [config config-file lb-filter id]}]
+  (let [conf (or config (load-config config-file))
+        res @(c/destroy conf lb-filter id)]
+    (t/log! {:data {:result res
+                    :instance-id id}}
+            "Instance destroyed")
+    res))

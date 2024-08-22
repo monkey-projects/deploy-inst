@@ -258,7 +258,11 @@
            r
            (fn [r]
              (if (all-ok? r)
-               true
+               (do 
+                 (t/log! {:data {:backends bes
+                                 :states r}}
+                         "All backends ok")
+                 true)
                (md/recur (mt/in interval check-all))))))
         (constantly bes))
        (mt/seconds backend-timeout-s)))))
@@ -287,18 +291,16 @@
                          (fn [ips]
                            (t/log! {:data ips} "Ip addresses assigned to new instance")
                            ips))]
-    ;; 4. Create new backends for each container in the new instace for the backends
-    ;; 5. Wait until all backends are online
-    ;; 6. Drain old backends
-    ;; 7. Wait and delete old backends
-    ;; 8. Delete the old instance
     (md/chain
      new-ips
      first
+     ;; 4. Create new backends for each container in the new instace for the backends
      (fn [ip]
        (t/log! {:data ip :backends new-bes} "Creating backends for ip")
        (create-backends conf ip new-bes))
+     ;; 5. Wait until all backends are online
      (partial wait-for-backends conf)
+     ;; 6. Drain old backends
      (fn [created-bes]
        (md/chain
         (drain-backends conf bes)
@@ -308,11 +310,14 @@
                        :seconds drain-delay-s}}
                "Waiting for connections to be drained")
        (md/chain
+        ;; Wait a bit
         (mt/in (mt/seconds drain-delay-s)
                (fn []
                  (t/log! {:data bes} "Stopping old backends and deleting old container instance")
                  (md/zip
+                  ;; 7. Delete old backends
                   (delete-backends conf bes)
+                  ;; 8. Delete the old instance
                   (delete-ci conf (:id old)))))
         (constantly created-bes)))
      (fn [created-bes]
@@ -331,15 +336,21 @@
                      ci
                      (partial private-ips conf)
                      (fn [ips]
-                       (find-matching-backends lb ips)))]
+                       (find-matching-backends lb ips)))
+                delay-secs 10]
     (md/chain
      (drain-backends conf bes)
      (fn [_]
-       (md/zip
-        (delete-ci conf id)
-        (delete-backends conf bes)))
+       (t/log! {:data {:backends bes
+                       :delay-seconds delay-secs}}
+               "Backends drained, waiting to clean up")
+       (mt/in (mt/seconds delay-secs)
+              #(md/zip
+                (delete-ci conf id)
+                (delete-backends conf bes))))
      (fn [_]
        (md/zip ci bes))
      (fn [[ci bes]]
+       (t/log! {:instance-id id} "Instance and backends destroyed")
        {:ci ci
         :backends bes}))))

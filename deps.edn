@@ -1,5 +1,5 @@
 {:deps {aero/aero {:mvn/version "1.1.6"}
-        com.monkeyprojects/aero-ext {:mvn/version "0.1.0-SNAPSHOT"}
+        com.monkeyprojects/aero-ext {:mvn/version "0.2.0"}
         com.monkeyprojects/oci-core {:mvn/version "0.1.0-SNAPSHOT"}
         com.monkeyprojects/oci-container-instance {:mvn/version "0.1.0"}
         com.monkeyprojects/oci-lb {:mvn/version "0.1.1-SNAPSHOT"}
